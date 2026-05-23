@@ -1,0 +1,7 @@
+langgraph
+langchain
+langchain-huggingface
+tavily-python
+yfinance
+python-dotenv
+langchain-community
