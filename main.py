@@ -10,6 +10,7 @@ import os
 import yfinance as yf
 from typing import TypedDict
 import operator
+from rag import search_rag
 from langchain_ollama import ChatOllama
 
 load_dotenv()
@@ -28,6 +29,7 @@ class FinSightState(TypedDict) :
     news : list[str]
     report : str
     is_good_enough : bool
+    rag_data: str
 
 def intent_classifier(state: FinSightState):
     query = state["query"]
@@ -38,10 +40,14 @@ Classify the query as ONE of:
 - retrieve: fetch specific data point
 - analyze: multi-step research, comparison, investment advice
 
-Also extract the company name (write None if explain).
+Also extract the full official company name as listed on stock excahnges 
+Examples: 
+- "Reliance" → "Reliance Industries Limited"
+- "TCS" → "Tata Consultancy Services Limited"
+- "Infosys" → "Infosys Limited"(write None if explain).
 Reply EXACTLY in this format with nothing else:
 intent: analyze
-company: Reliance"""),
+company: Reliance Industries Limited"""),
         HumanMessage(content=query)
     ])
     
@@ -69,18 +75,29 @@ def explain_node(state: FinSightState) :
     response = model.invoke([HumanMessage(content=query)])
     return { "report" : response.content}
 
-def retrieve_node(state: FinSightState) :
-
-    TICKER_MAP = {
-    "reliance": "RELIANCE.NS",
-    "tcs": "TCS.NS",
-    "infosys": "INFY.NS",
-    "wipro": "WIPRO.NS",
-    "hdfc": "HDFCBANK.NS",
-    "icici": "ICICIBANK.NS",
-    }
+def retrieve_node(state: FinSightState):
     company = state["company"]
-    ticker = TICKER_MAP.get(company, "RELIANCE.NS")  # default to Reliance
+    
+    try:
+        search_results = yf.Search(company, news_count=0).quotes
+        if not search_results:
+            # try with just first word
+            short_name = company.split()[0]
+            search_results = yf.Search(short_name, news_count=0).quotes
+    # prefer RELIANCE.NS over RELINFRA.NS
+        indian_stocks = [q for q in search_results 
+                     if q.get('symbol', '').endswith('.NS') 
+                     and q.get('quoteType') == 'EQUITY']
+    
+        if indian_stocks:
+            ticker = indian_stocks[0]['symbol']
+        else:
+            ticker = search_results[0]['symbol']
+        
+    except:
+        ticker = None
+
+    print("TICKER FOUND:", ticker)
 
     try:
         stock = yf.Ticker(ticker)
@@ -93,16 +110,50 @@ def retrieve_node(state: FinSightState) :
 
 def analyze_node(state: FinSightState):
     company = state["company"]
+
+    try:
+        search_results = yf.Search(company, news_count=0).quotes
+        if not search_results:
+            # try with just first word
+            short_name = company.split()[0]
+            search_results = yf.Search(short_name, news_count=0).quotes
+    # prefer RELIANCE.NS over RELINFRA.NS
+        indian_stocks = [q for q in search_results 
+                     if q.get('symbol', '').endswith('.NS') 
+                     and q.get('quoteType') == 'EQUITY']
+    
+        if indian_stocks:
+            ticker = indian_stocks[0]['symbol']
+        else:
+            ticker = search_results[0]['symbol']
+        
+    except:
+        ticker = None
+
+    print("TICKER FOUND:", ticker)
+
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        data = f"Price: {info.get('currentPrice', 'N/A')}, MarketCap: {info.get('marketCap', 'N/A')}, PE: {info.get('trailingPE', 'N/A')}"
+    except:
+        data = f"Could not fetch data for {company}"
     
     # search 1 - news
     news_response = search_tool.invoke(f"latest news about {company} 2026")
     news = [r["content"] for r in news_response["results"]]
+    # add temporarily to analyze_node
     
     # search 2 - analyst opinions
     analyst_response = search_tool.invoke(f"give analyst opinions about {company} 2026")
     analyst_opinion = [r["content"] for r in analyst_response["results"]]
     
-    return {"news": news, "analyst_opinion": analyst_opinion}
+    rag_data = search_rag(
+        query=state["query"], 
+        symbol=ticker.replace(".NS", "") if ticker else company.upper()
+    )
+
+    return {"news": news, "analyst_opinion": analyst_opinion, "stock_data": data, "rag_data": rag_data}
 
 def report_writer(state: FinSightState):
     intent = state["intent"]
@@ -118,7 +169,23 @@ def report_writer(state: FinSightState):
         company = state["company"]
         news = state["news"]
         analyst = state["analyst_opinion"]
-        prompt = f"Company: {company}\nNews: {news}\nAnalyst opinions: {analyst}\n\nWrite a structured investment report."
+        stock_data = state["stock_data"]
+        rag_data = state["rag_data"]
+        prompt = f"""You are a financial analyst writing a research report (NOT personal advice).
+                Company: {company}
+                Stock Data: {stock_data}
+                News: {news}
+                Analyst Opinions: {analyst}
+                Annual Report Excerpts: {rag_data}
+
+                Write a structured research report with sections:
+                1. Financial Summary
+                2. Recent Developments  
+                3. Analyst Consensus
+                4. Key Risks
+                5. Outlook
+                Write a structured investment report using ALL the above data sources.
+                Prioritize exact figures from the annual report excerpts."""
         response = model.invoke([
             SystemMessage(content="You are a professional financial analyst."),
             HumanMessage(content=prompt)
@@ -127,13 +194,34 @@ def report_writer(state: FinSightState):
     
 def evaluator(state: FinSightState):
     report = state["report"]
-    response = model.invoke([
-        SystemMessage(content="You are a report evaluator. Reply with ONLY the word 'yes' or 'no'. Is this report good enough?"),
-        HumanMessage(content=report[:500])  # only check first 500 chars, faster
-    ])
-    result = response.content.strip().lower()
-    is_good = "no" not in result  # default to True unless explicitly "no"
-    return {"is_good_enough": True}
+    intent = state["intent"]
+    issues = []
+    
+    # check 1 - minimum length
+    if len(report) < 300:
+        issues.append("too short")
+    
+    # check 2 - has required sections
+    required_sections = ["financial", "risk", "outlook", "recommendation"]
+    missing = [s for s in required_sections if s.lower() not in report.lower()]
+    if len(missing) > 2:
+        issues.append(f"missing sections: {missing}")
+    
+    # check 3 - has actual numbers (good report has data)
+    import re
+    numbers = re.findall(r'₹[\d,]+|[\d]+\.[\d]+%|\$[\d,]+', report)
+    if intent == "analyze" and len(numbers) < 2:
+        issues.append("insufficient data points")
+    
+    # check 4 - not an error/refusal
+    refusal_phrases = ["i cannot", "i'm unable", "i don't have"]
+    if any(p in report.lower() for p in refusal_phrases):
+        issues.append("llm refused to answer")
+    
+    is_good = len(issues) == 0
+    print(f"Evaluation: {'PASSED' if is_good else 'FAILED - ' + str(issues)}")
+    
+    return {"is_good_enough": is_good}
 
 def should_continue(state: FinSightState) -> Literal["END", "report_writer"] :
     good_enough = state["is_good_enough"]
@@ -162,7 +250,7 @@ graph.add_conditional_edges("evaluator", should_continue, [END, "report_writer"]
 agent = graph.compile()
 
 result = agent.invoke({
-    "query": "What is a P/E ratio?",
+    "query": "Should I invest in Dixon Technologies?",
     "messages": [],
     "intent": "",
     "company": "",
@@ -175,7 +263,7 @@ result = agent.invoke({
 
 print(result["report"])
 
-print("INTENT:", result["intent"])
-print("COMPANY:", result["company"])
-print("STOCK DATA:", result["stock_data"])
-print("REPORT:", result["report"])
+# print("INTENT:", result["intent"])
+# print("COMPANY:", result["company"])
+# print("STOCK DATA:", result["stock_data"])
+# print("REPORT:", result["report"])
