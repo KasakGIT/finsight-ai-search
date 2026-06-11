@@ -1,7 +1,14 @@
 langgraph
 langchain
 langchain-huggingface
-tavily-python
+langchain-tavily
+langchain-community
+langchain-text-splitters
+langchain-core
 yfinance
 python-dotenv
-langchain-community
+gradio
+faiss-cpu
+pypdf
+sentence-transformers
+markdown
