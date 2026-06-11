@@ -7,9 +7,9 @@ langchain-text-splitters
 langchain-core
 yfinance
 python-dotenv
-gradio==4.44.0
 faiss-cpu
 pypdf
 sentence-transformers
 markdown
 audioop-lts
+huggingface_hub==0.25.2
