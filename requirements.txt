@@ -5,7 +5,7 @@ langchain-tavily
 langchain-community
 langchain-text-splitters
 langchain-core
-yfinance
+yfinance==0.2.43
 python-dotenv
 faiss-cpu
 pypdf
