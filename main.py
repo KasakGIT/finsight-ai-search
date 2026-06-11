@@ -108,6 +108,8 @@ def retrieve_node(state: FinSightState):
     
     try:
         search_results = yf.Search(company, news_count=0).quotes
+        print("COMPANY:", company)
+        print("SEARCH RESULTS:", search_results)
         if not search_results:
             # try with just first word
             short_name = company.split()[0]
@@ -123,6 +125,7 @@ def retrieve_node(state: FinSightState):
             ticker = search_results[0]['symbol']
         
     except:
+        print("SEARCH ERROR:", str(e))
         ticker = None
 
     print("TICKER FOUND:", ticker)
