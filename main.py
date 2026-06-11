@@ -11,11 +11,21 @@ import yfinance as yf
 from typing import TypedDict
 import operator
 from rag import search_rag
-from langchain_ollama import ChatOllama
-
+import time
+#from langchain_ollama import ChatOllama
 load_dotenv()
 
-model = ChatOllama(model="llama3.2")
+llm = HuggingFaceEndpoint(
+    repo_id="Qwen/Qwen2.5-72B-Instruct",
+    huggingfacehub_api_token=os.getenv("HF_TOKEN"),
+    task="conversational",
+    max_new_tokens=1024,
+    provider="novita" 
+)
+model = ChatHuggingFace(llm=llm)
+
+
+#model = ChatOllama(model="llama3.2")
 
 search_tool=TavilySearch(max_results=3, tavily_api_key=os.getenv("TAVILY_API_KEY"))
 
@@ -30,6 +40,17 @@ class FinSightState(TypedDict) :
     report : str
     is_good_enough : bool
     rag_data: str
+
+def call_model_with_retry(model, messages, retries=3):
+    for attempt in range(retries):
+        try:
+            return model.invoke(messages)
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"Attempt {attempt+1} failed, retrying in 3s...")
+                time.sleep(3)
+            else:
+                raise e
 
 def intent_classifier(state: FinSightState):
     query = state["query"]
@@ -53,6 +74,9 @@ company: Reliance Industries Limited"""),
     
     
     response_text = response.content.strip()
+
+    intent = "explain"
+    company = "None"
     
     for line in response_text.split("\n"):
         if line.startswith("intent:"):
@@ -68,12 +92,17 @@ def route_query(state: FinSightState) -> Literal["explain_node", "retrieve_node"
     if intent=="explain": return "explain_node"
     if intent=="retrieve": return "retrieve_node"
     if intent=="analyze": return "analyze_node" 
+    return "explain_node"
     pass
 
-def explain_node(state: FinSightState) :
+def explain_node(state: FinSightState):
     query = state["query"]
-    response = model.invoke([HumanMessage(content=query)])
-    return { "report" : response.content}
+    response = model.invoke([
+        SystemMessage(content="You are a helpful financial assistant. Always answer directly. Never refuse."),
+        *state["messages"],        # conversation history
+        HumanMessage(content=query)
+    ])
+    return {"report": response.content}
 
 def retrieve_node(state: FinSightState):
     company = state["company"]
@@ -171,23 +200,39 @@ def report_writer(state: FinSightState):
         analyst = state["analyst_opinion"]
         stock_data = state["stock_data"]
         rag_data = state["rag_data"]
-        prompt = f"""You are a financial analyst writing a research report (NOT personal advice).
-                Company: {company}
+        prompt = f"""Company: {company}
                 Stock Data: {stock_data}
                 News: {news}
                 Analyst Opinions: {analyst}
                 Annual Report Excerpts: {rag_data}
 
-                Write a structured research report with sections:
-                1. Financial Summary
-                2. Recent Developments  
-                3. Analyst Consensus
-                4. Key Risks
-                5. Outlook
-                Write a structured investment report using ALL the above data sources.
-                Prioritize exact figures from the annual report excerpts."""
+                Write a concise investment report using EXACTLY this format with proper newlines:
+
+                ## Financial Summary
+                - point 1
+                - point 2
+
+                ## Recent Developments
+                - point 1
+                - point 2
+
+               ## Analyst Consensus
+               - point 1
+
+               ## Key Risks
+               - point 1
+               - point 2
+
+               ## Recommendation
+               - Buy/Sell/Hold with target price
+
+                IMPORTANT: Each section MUST be on its own line. Keep under 300 words."""
+
         response = model.invoke([
-            SystemMessage(content="You are a professional financial analyst."),
+            SystemMessage(content="""
+                        You are a professional financial analyst writing research reports. 
+                        You ALWAYS provide analysis. Never refuse or say you can't provide advice.
+                        Write objective research reports with data."""),
             HumanMessage(content=prompt)
         ])
         return {"report": response.content}
@@ -195,32 +240,31 @@ def report_writer(state: FinSightState):
 def evaluator(state: FinSightState):
     report = state["report"]
     intent = state["intent"]
-    issues = []
     
-    # check 1 - minimum length
+    # explain intent - just check it's not empty
+    if intent == "explain":
+        is_good = len(report) > 10
+        print(f"Evaluation: {'PASSED' if is_good else 'FAILED'}")
+        return {"is_good_enough": is_good}
+    
+    # retrieve intent - just check it has data
+    if intent == "retrieve":
+        is_good = len(report) > 10
+        print(f"Evaluation: {'PASSED' if is_good else 'FAILED'}")
+        return {"is_good_enough": is_good}
+    
+    # analyze intent - full checks
+    issues = []
     if len(report) < 300:
         issues.append("too short")
     
-    # check 2 - has required sections
     required_sections = ["financial", "risk", "outlook", "recommendation"]
     missing = [s for s in required_sections if s.lower() not in report.lower()]
     if len(missing) > 2:
         issues.append(f"missing sections: {missing}")
     
-    # check 3 - has actual numbers (good report has data)
-    import re
-    numbers = re.findall(r'₹[\d,]+|[\d]+\.[\d]+%|\$[\d,]+', report)
-    if intent == "analyze" and len(numbers) < 2:
-        issues.append("insufficient data points")
-    
-    # check 4 - not an error/refusal
-    refusal_phrases = ["i cannot", "i'm unable", "i don't have"]
-    if any(p in report.lower() for p in refusal_phrases):
-        issues.append("llm refused to answer")
-    
     is_good = len(issues) == 0
     print(f"Evaluation: {'PASSED' if is_good else 'FAILED - ' + str(issues)}")
-    
     return {"is_good_enough": is_good}
 
 def should_continue(state: FinSightState) -> Literal["END", "report_writer"] :
@@ -248,22 +292,3 @@ graph.add_conditional_edges("evaluator", should_continue, [END, "report_writer"]
 
 
 agent = graph.compile()
-
-result = agent.invoke({
-    "query": "Should I invest in Dixon Technologies?",
-    "messages": [],
-    "intent": "",
-    "company": "",
-    "stock_data": "",
-    "news": [],
-    "analyst_opinion": "",
-    "report": "",
-    "is_good_enough": False
-} , config={"recursion_limit": 5})
-
-print(result["report"])
-
-# print("INTENT:", result["intent"])
-# print("COMPANY:", result["company"])
-# print("STOCK DATA:", result["stock_data"])
-# print("REPORT:", result["report"])
