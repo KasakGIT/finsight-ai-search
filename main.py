@@ -4,7 +4,6 @@ from langchain_core.messages import HumanMessage, SystemMessage, AnyMessage
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from typing import Literal, Annotated
 from langchain_tavily import TavilySearch
-from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import os
 import yfinance as yf
