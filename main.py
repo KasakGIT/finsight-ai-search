@@ -124,7 +124,7 @@ def retrieve_node(state: FinSightState):
         else:
             ticker = search_results[0]['symbol']
         
-    except:
+    except Exception as e:
         print("SEARCH ERROR:", str(e))
         ticker = None
 

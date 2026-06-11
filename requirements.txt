@@ -5,10 +5,12 @@ langchain-tavily
 langchain-community
 langchain-text-splitters
 langchain-core
-yfinance==0.2.43
+yfinance==1.3.0
 python-dotenv
 faiss-cpu
 pypdf
 sentence-transformers
 markdown
 audioop-lts
+huggingface_hub==0.25.2
+langchain-openai
