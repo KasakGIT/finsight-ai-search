@@ -101,4 +101,4 @@ with gr.Blocks(title="FinSight", css=custom_css) as demo:
     msg.submit(chat, [msg, chatbot], [chatbot, msg])
     send.click(chat, [msg, chatbot], [chatbot, msg])
 
-demo.launch()
+demo.launch(show_api=False)
