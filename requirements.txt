@@ -11,4 +11,5 @@ gradio
 faiss-cpu
 pypdf
 sentence-transformers
-markdownaudioop-lts
+markdown
+audioop-lts
