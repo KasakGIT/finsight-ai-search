@@ -132,8 +132,13 @@ def retrieve_node(state: FinSightState):
 
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
-        data = f"Price: {info.get('currentPrice', 'N/A')}, MarketCap: {info.get('marketCap', 'N/A')}, PE: {info.get('trailingPE', 'N/A')}"
+        fast = stock.fast_info
+
+        data = f"""
+        Price: {fast.get('lastPrice', 'N/A')}
+        Market Cap: {fast.get('marketCap', 'N/A')}
+        PE Ratio: {fast.get('trailingPE', 'N/A')}
+        Dividend Yield: {fast.get('dividendYield', 'N/A')}"""
     except:
         data = f"Could not fetch data for {company}"
     
